@@ -1,0 +1,175 @@
+name: 🎯 Daily Disruption Scan
+
+on:
+  # ⏰ Cron quotidien — 8h Paris = 7h UTC (6h UTC en été)
+  schedule:
+    - cron: "0 7 * * *"
+
+  # 🔘 Lancement manuel depuis l'UI GitHub
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Scanner sources (comma-separated)"
+        required: false
+        default: "g2,alternativeto,github,reddit"
+      scraper_sources:
+        description: "Ideas scraper sources (comma-separated)"
+        required: false
+        default: "reddit,hn,producthunt"
+
+# Évite les runs concurrents
+concurrency:
+  group: disruption-scan
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # Pour commit le SQLite
+  pages: write           # Pour GitHub Pages (reports)
+  id-token: write        # Pour Pages deployment
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── Restaurer la DB depuis le repo ──────────────────────────────────
+      - name: 💾 Restore database
+        run: |
+          mkdir -p data/reports
+          if [ -f data/disruption.db ]; then
+            echo "✅ Existing database found"
+            python -c "import store; store.init_db(); stats=store.get_stats(); print(f'📊 {stats[\"total\"]} opportunities tracked')"
+          else
+            echo "🆕 No database found, will create new one"
+            python -c "import store; store.init_db(); print('✅ Database initialized')"
+          fi
+
+      # ── Run le scan ─────────────────────────────────────────────────────
+      - name: 🎯 Run disruption scan
+        env:
+          # Sources (override via workflow_dispatch)
+          SCANNER_SOURCES: ${{ github.event.inputs.sources || 'g2,alternativeto,github,reddit' }}
+          SCRAPER_SOURCES: ${{ github.event.inputs.scraper_sources || 'reddit,hn,producthunt' }}
+          LIMIT_PER_SOURCE: "25"
+          MAX_RATING: "4.0"
+          MIN_REVIEWS: "20"
+          DATA_DIR: "./data"
+
+          # Notifications (configure dans Settings > Secrets)
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python runner.py --once
+
+      # ── Générer un index HTML pour GitHub Pages ─────────────────────────
+      - name: 📊 Generate Pages index
+        run: |
+          python -c "
+          import json, store
+          from datetime import datetime, timezone, timedelta
+          from pathlib import Path
+
+          store.init_db()
+          stats = store.get_stats()
+          top = store.get_top_opportunities(limit=50, min_score=5)
+          yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+          new = store.get_new_since(yesterday)
+          runs = store.get_recent_runs(limit=20)
+
+          # Save API-like JSON files for static hosting
+          pages_dir = Path('data/reports')
+          pages_dir.mkdir(parents=True, exist_ok=True)
+
+          (pages_dir / 'api-stats.json').write_text(json.dumps(stats, default=str))
+          (pages_dir / 'api-top.json').write_text(json.dumps(top[:50], default=str))
+          (pages_dir / 'api-new.json').write_text(json.dumps(new[:20], default=str))
+          (pages_dir / 'api-runs.json').write_text(json.dumps(runs, default=str))
+
+          # Generate index.html that redirects to latest report
+          reports = sorted(pages_dir.glob('report-*.html'), reverse=True)
+          latest = reports[0].name if reports else None
+
+          html = '''<!DOCTYPE html>
+          <html><head><meta charset=\"utf-8\">
+          <title>Disruption Scanner</title>
+          <style>
+            body{font-family:-apple-system,sans-serif;background:#0c0a1a;color:#e8e4f0;padding:2rem;max-width:800px;margin:0 auto}
+            h1{background:linear-gradient(135deg,#ff6b6b,#ffd93d);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+            a{color:#4d96ff} .stat{display:inline-block;background:#1a1530;padding:1rem;border-radius:10px;margin:0.5rem;text-align:center}
+            .val{font-size:2rem;font-weight:700} .label{font-size:0.8rem;color:#9890aa}
+          </style></head><body>
+          <h1>🎯 Disruption Scanner</h1>
+          <p>Auto-updated daily via GitHub Actions</p>
+          <div>
+            <div class=\"stat\"><div class=\"val\" style=\"color:#4d96ff\">''' + str(stats.get('total',0)) + '''</div><div class=\"label\">Tracked</div></div>
+            <div class=\"stat\"><div class=\"val\" style=\"color:#ff6b6b\">''' + str(stats.get('high_score',0)) + '''</div><div class=\"label\">High Score</div></div>
+            <div class=\"stat\"><div class=\"val\" style=\"color:#6bcb77\">''' + str(len(new)) + '''</div><div class=\"label\">New (24h)</div></div>
+          </div>
+          <h2>📊 Reports</h2>'''
+
+          for r in reports[:10]:
+              html += f'<p><a href=\"{r.name}\">{r.name}</a></p>'
+
+          if not reports:
+              html += '<p>No reports yet — first scan in progress...</p>'
+
+          html += '''
+          <h2>🔗 Data</h2>
+          <p><a href=\"api-top.json\">Top opportunities (JSON)</a></p>
+          <p><a href=\"api-stats.json\">Stats (JSON)</a></p>
+          <p><a href=\"api-new.json\">New (JSON)</a></p>
+          <p><a href=\"api-runs.json\">Runs history (JSON)</a></p>
+          </body></html>'''
+
+          (pages_dir / 'index.html').write_text(html)
+          print(f'✅ Pages index generated with {len(reports)} reports')
+          "
+
+      # ── Commit la DB + reports dans le repo ─────────────────────────────
+      - name: 💾 Persist database & reports
+        run: |
+          git config user.name "Disruption Scanner Bot"
+          git config user.email "bot@disruption-scanner"
+          git add data/disruption.db data/reports/ || true
+          git diff --cached --quiet || git commit -m "🎯 Scan $(date +%Y-%m-%d) — $(python -c 'import store; store.init_db(); s=store.get_stats(); print(f\"{s[\"total\"]} tracked, {s[\"high_score\"]} hot\")')"
+          git push || echo "⚠️ Push failed (probably concurrent run)"
+
+      # ── Deploy reports sur GitHub Pages ─────────────────────────────────
+      - name: 🌐 Deploy to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: data/reports
+
+  # Job séparé pour le déploiement Pages
+  deploy-pages:
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 🚀 Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,17 @@
+services:
+  scanner:
+    build: .
+    container_name: disruption-scanner
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - scanner-data:/app/data
+    env_file:
+      - .env
+    # Override: run once only
+    # command: ["--once"]
+
+volumes:
+  scanner-data:
+    driver: local

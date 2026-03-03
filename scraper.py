@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -90,41 +91,47 @@ def _extract_tags(text: str) -> list[str]:
 _REDDIT_SUBS = ["SaaS", "startups", "Entrepreneur", "microsaas", "indiehackers"]
 
 
+_ATOM_NS = "http://www.w3.org/2005/Atom"
+
+
 def scrape_reddit(limit: int = 30) -> list[IdeaPost]:
-    """Fetch hot posts from business-related subreddits via Reddit JSON API."""
+    """Fetch hot posts from business-related subreddits via RSS feeds."""
     try:
         per_sub = max(5, (limit // len(_REDDIT_SUBS)) + 5)
         posts: list[IdeaPost] = []
 
         for sub in _REDDIT_SUBS:
-            url = f"https://www.reddit.com/r/{sub}/hot.json?limit={per_sub}"
+            url = f"https://www.reddit.com/r/{sub}/hot.rss?limit={per_sub}"
             resp = _fetch(url)
             if resp is None:
                 continue
 
-            data = resp.json()
-            children = data.get("data", {}).get("children", [])
+            root = ET.fromstring(resp.text)
 
-            for child in children:
-                d = child.get("data", {})
-                if d.get("stickied") or d.get("over_18"):
+            for entry in root.findall(f"{{{_ATOM_NS}}}entry"):
+                title_el = entry.find(f"{{{_ATOM_NS}}}title")
+                link_el = entry.find(f"{{{_ATOM_NS}}}link")
+                content_el = entry.find(f"{{{_ATOM_NS}}}content")
+
+                title = title_el.text if title_el is not None and title_el.text else ""
+                link = link_el.get("href", "") if link_el is not None else ""
+                content = content_el.text if content_el is not None and content_el.text else ""
+
+                if not title:
                     continue
 
-                title = d.get("title", "")
-                selftext = d.get("selftext", "") or ""
-                snippet = (selftext[:200] + "...") if len(selftext) > 200 else selftext
+                snippet = (content[:200] + "...") if len(content) > 200 else content
 
                 posts.append(IdeaPost(
                     title=title,
-                    url=f"https://reddit.com{d.get('permalink', '')}",
+                    url=link,
                     source="reddit",
                     sub_source=f"r/{sub}",
-                    score=d.get("score", 0),
+                    score=0,
                     snippet=snippet,
-                    tags=_extract_tags(f"{title} {selftext}"),
+                    tags=_extract_tags(f"{title} {content}"),
                 ))
 
-        posts.sort(key=lambda p: p.score, reverse=True)
         return posts[:limit]
 
     except Exception as exc:

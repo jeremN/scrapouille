@@ -39,54 +39,25 @@ def _make_response(content: str | dict, status_code: int = 200) -> MagicMock:
     return resp
 
 
-# ---- Fake Reddit JSON payload -------------------------------------------
+# ---- Fake Reddit RSS payload --------------------------------------------
 
-FAKE_REDDIT_JSON = {
-    "data": {
-        "children": [
-            {
-                "data": {
-                    "title": "I built a SaaS tool for analytics",
-                    "selftext": "Here is my new analytics SaaS product.",
-                    "permalink": "/r/SaaS/comments/abc/my_post/",
-                    "score": 150,
-                    "stickied": False,
-                    "over_18": False,
-                }
-            },
-            {
-                "data": {
-                    "title": "Stickied announcement",
-                    "selftext": "",
-                    "permalink": "/r/SaaS/comments/xyz/sticky/",
-                    "score": 999,
-                    "stickied": True,
-                    "over_18": False,
-                }
-            },
-            {
-                "data": {
-                    "title": "NSFW post",
-                    "selftext": "",
-                    "permalink": "/r/SaaS/comments/nsfw/post/",
-                    "score": 50,
-                    "stickied": False,
-                    "over_18": True,
-                }
-            },
-            {
-                "data": {
-                    "title": "Launched my startup with AI automation",
-                    "selftext": "Using AI to automate workflows.",
-                    "permalink": "/r/SaaS/comments/def/startup/",
-                    "score": 75,
-                    "stickied": False,
-                    "over_18": False,
-                }
-            },
-        ]
-    }
-}
+FAKE_REDDIT_RSS = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>I built a SaaS tool for analytics</title>
+    <link href="https://www.reddit.com/r/SaaS/comments/abc/my_post/"/>
+    <content type="html">&lt;p&gt;Here is my new analytics SaaS product.&lt;/p&gt;</content>
+    <category term="SaaS" label="r/SaaS"/>
+  </entry>
+  <entry>
+    <title>Launched my startup with AI automation</title>
+    <link href="https://www.reddit.com/r/SaaS/comments/def/startup/"/>
+    <content type="html">&lt;p&gt;Using AI to automate workflows.&lt;/p&gt;</content>
+    <category term="SaaS" label="r/SaaS"/>
+  </entry>
+</feed>
+"""
 
 # ---- Fake HN Algolia payload --------------------------------------------
 
@@ -253,22 +224,19 @@ class TestScrapeReddit:
 
     @patch("scraper._fetch")
     def test_scrape_reddit_parses_posts(self, mock_fetch):
-        mock_fetch.return_value = _make_response(FAKE_REDDIT_JSON)
+        mock_fetch.return_value = _make_response(FAKE_REDDIT_RSS)
         posts = scrape_reddit(limit=10)
 
-        # Should skip stickied and NSFW -- 2 valid posts per subreddit call
         assert len(posts) > 0
         assert all(isinstance(p, IdeaPost) for p in posts)
         assert all(p.source == "reddit" for p in posts)
 
-        # The first (highest score) should be the analytics one (150)
-        assert posts[0].score == 150
-        assert "SaaS" in posts[0].title or "analytics" in posts[0].title
+        # RSS does not provide scores, so all should be 0
+        assert all(p.score == 0 for p in posts)
 
-        # Verify stickied and NSFW are excluded
+        # First entry title should be present
         titles = [p.title for p in posts]
-        assert "Stickied announcement" not in titles
-        assert "NSFW post" not in titles
+        assert any("SaaS" in t or "analytics" in t for t in titles)
 
     @patch("scraper._fetch")
     def test_scrape_reddit_returns_empty_on_failure(self, mock_fetch):
@@ -278,16 +246,18 @@ class TestScrapeReddit:
 
     @patch("scraper._fetch")
     def test_scrape_reddit_sub_source(self, mock_fetch):
-        mock_fetch.return_value = _make_response(FAKE_REDDIT_JSON)
+        mock_fetch.return_value = _make_response(FAKE_REDDIT_RSS)
         posts = scrape_reddit(limit=5)
         assert all(p.sub_source.startswith("r/") for p in posts)
 
     @patch("scraper._fetch")
-    def test_scrape_reddit_sorted_by_score(self, mock_fetch):
-        mock_fetch.return_value = _make_response(FAKE_REDDIT_JSON)
+    def test_scrape_reddit_extracts_tags(self, mock_fetch):
+        mock_fetch.return_value = _make_response(FAKE_REDDIT_RSS)
         posts = scrape_reddit(limit=50)
-        scores = [p.score for p in posts]
-        assert scores == sorted(scores, reverse=True)
+        # "SaaS" and "ai" should appear as tags from the RSS entries
+        all_tags = [tag for p in posts for tag in p.tags]
+        assert "saas" in all_tags
+        assert "ai" in all_tags
 
 
 class TestScrapeHackerNews:

@@ -74,17 +74,13 @@ FAKE_CAPTERRA_HTML = """
 </body></html>
 """
 
-FAKE_ALTERNATIVETO_HTML = """
-<html><body>
-<div class="app-item">
-  <a class="app-name" href="/software/slack">Slack</a>
-  <span class="alternatives">42 alternatives</span>
-</div>
-<div class="app-item">
-  <a class="app-name" href="/software/trello">Trello</a>
-  <span class="alternatives">28 alternatives</span>
-</div>
-</body></html>
+FAKE_ALTERNATIVETO_SITEMAP_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://alternativeto.net/software/slack/about/</loc></url>
+  <url><loc>https://alternativeto.net/software/trello/about/</loc></url>
+  <url><loc>https://alternativeto.net/category/productivity/</loc></url>
+</urlset>
 """
 
 FAKE_GITHUB_JSON = {
@@ -113,30 +109,26 @@ FAKE_GITHUB_JSON = {
     ]
 }
 
-FAKE_REDDIT_ALT_JSON = {
-    "data": {
-        "children": [
-            {
-                "data": {
-                    "title": "Looking for an alternative to Jira",
-                    "permalink": "/r/SaaS/comments/abc/alt_jira/",
-                }
-            },
-            {
-                "data": {
-                    "title": "Need an alternative to Slack?",
-                    "permalink": "/r/SaaS/comments/def/alt_slack/",
-                }
-            },
-            {
-                "data": {
-                    "title": "Random post without the pattern",
-                    "permalink": "/r/SaaS/comments/ghi/random/",
-                }
-            },
-        ]
-    }
-}
+FAKE_REDDIT_ALT_RSS = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Looking for an alternative to Jira</title>
+    <link href="https://www.reddit.com/r/SaaS/comments/abc/alt_jira/"/>
+    <content type="html">&lt;p&gt;Any suggestions?&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>Need an alternative to Slack?</title>
+    <link href="https://www.reddit.com/r/SaaS/comments/def/alt_slack/"/>
+    <content type="html">&lt;p&gt;Try these options&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>Random post without the pattern</title>
+    <link href="https://www.reddit.com/r/SaaS/comments/ghi/random/"/>
+    <content type="html">&lt;p&gt;Just a random post&lt;/p&gt;</content>
+  </entry>
+</feed>
+"""
 
 
 # ===========================================================================
@@ -297,8 +289,8 @@ class TestScrapeAlternativeTo:
     """Test scrape_alternativeto."""
 
     @patch("disruption_scanner._fetch")
-    def test_scrape_alternativeto_parses_html(self, mock_fetch):
-        mock_fetch.return_value = _make_response(FAKE_ALTERNATIVETO_HTML)
+    def test_scrape_alternativeto_parses_sitemap(self, mock_fetch):
+        mock_fetch.return_value = _make_response(FAKE_ALTERNATIVETO_SITEMAP_XML)
         apps = scrape_alternativeto(limit=30)
 
         assert len(apps) == 2
@@ -306,7 +298,8 @@ class TestScrapeAlternativeTo:
         names = [a.name for a in apps]
         assert "Slack" in names
         assert "Trello" in names
-        assert apps[0].alternatives_count == 42
+        # Category URLs should be skipped
+        assert not any("productivity" in a.name.lower() for a in apps)
 
     @patch("disruption_scanner._fetch")
     def test_scrape_alternativeto_empty_on_failure(self, mock_fetch):
@@ -361,7 +354,7 @@ class TestScrapeRedditAlternatives:
 
     @patch("disruption_scanner._fetch")
     def test_scrape_reddit_alternatives_parses(self, mock_fetch):
-        mock_fetch.return_value = _make_response(FAKE_REDDIT_ALT_JSON)
+        mock_fetch.return_value = _make_response(FAKE_REDDIT_ALT_RSS)
         apps = scrape_reddit_alternatives(limit=30)
 
         assert len(apps) >= 2

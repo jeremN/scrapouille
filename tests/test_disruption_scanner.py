@@ -74,13 +74,14 @@ FAKE_CAPTERRA_HTML = """
 </body></html>
 """
 
-FAKE_ALTERNATIVETO_SITEMAP_XML = """\
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://alternativeto.net/software/slack/about/</loc></url>
-  <url><loc>https://alternativeto.net/software/trello/about/</loc></url>
-  <url><loc>https://alternativeto.net/category/productivity/</loc></url>
-</urlset>
+FAKE_ALTERNATIVETO_HTML = """\
+<html><body>
+<div class="app-list">
+  <a href="/software/slack/">Slack</a>
+  <a href="/software/trello/">Trello</a>
+  <a href="/category/productivity/">Productivity</a>
+</div>
+</body></html>
 """
 
 FAKE_GITHUB_JSON = {
@@ -289,8 +290,9 @@ class TestScrapeAlternativeTo:
     """Test scrape_alternativeto."""
 
     @patch("disruption_scanner._fetch")
-    def test_scrape_alternativeto_parses_sitemap(self, mock_fetch):
-        mock_fetch.return_value = _make_response(FAKE_ALTERNATIVETO_SITEMAP_XML)
+    @patch("disruption_scanner._fetch_js", return_value=None)
+    def test_scrape_alternativeto_parses_html(self, mock_js, mock_fetch):
+        mock_fetch.return_value = _make_response(FAKE_ALTERNATIVETO_HTML)
         apps = scrape_alternativeto(limit=30)
 
         assert len(apps) == 2
@@ -298,11 +300,12 @@ class TestScrapeAlternativeTo:
         names = [a.name for a in apps]
         assert "Slack" in names
         assert "Trello" in names
-        # Category URLs should be skipped
+        # Category URLs should be skipped (no /software/ path)
         assert not any("productivity" in a.name.lower() for a in apps)
 
     @patch("disruption_scanner._fetch")
-    def test_scrape_alternativeto_empty_on_failure(self, mock_fetch):
+    @patch("disruption_scanner._fetch_js", return_value=None)
+    def test_scrape_alternativeto_empty_on_failure(self, mock_js, mock_fetch):
         mock_fetch.return_value = None
         apps = scrape_alternativeto()
         assert apps == []

@@ -15,7 +15,7 @@ on:
       scraper_sources:
         description: "Ideas scraper sources (comma-separated)"
         required: false
-        default: "reddit,hn,producthunt"
+        default: "reddit,hn,producthunt,indiehackers,exploding"
 
 # Évite les runs concurrents
 concurrency:
@@ -65,7 +65,7 @@ jobs:
         env:
           # Sources (override via workflow_dispatch)
           SCANNER_SOURCES: ${{ github.event.inputs.sources || 'g2,alternativeto,github,reddit' }}
-          SCRAPER_SOURCES: ${{ github.event.inputs.scraper_sources || 'reddit,hn,producthunt' }}
+          SCRAPER_SOURCES: ${{ github.event.inputs.scraper_sources || 'reddit,hn,producthunt,indiehackers,exploding' }}
           LIMIT_PER_SOURCE: "25"
           MAX_RATING: "4.0"
           MIN_REVIEWS: "20"

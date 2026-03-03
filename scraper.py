@@ -94,7 +94,7 @@ _BROWSER = None
 _PLAYWRIGHT = None
 
 
-def _fetch_js(url: str, wait_until: str = "networkidle", timeout: int = 15000) -> Optional[str]:
+def _fetch_js(url: str, wait_until: str = "domcontentloaded", timeout: int = 30000) -> Optional[str]:
     """Fetch a URL using headless Chromium for JS-rendered pages. Returns HTML string or None."""
     global _BROWSER, _PLAYWRIGHT
     try:

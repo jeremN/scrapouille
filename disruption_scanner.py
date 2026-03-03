@@ -18,6 +18,7 @@ from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
+from scraper import _fetch_js
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -364,8 +365,8 @@ def scrape_capterra(
 # ---------------------------------------------------------------------------
 
 
-_SITEMAP_SOFTWARE_RE = re.compile(
-    r"https?://alternativeto\.net/software/([^/]+)/", re.IGNORECASE
+_ALTERNATIVETO_SOFTWARE_RE = re.compile(
+    r"(?:https?://alternativeto\.net)?/software/([^/]+)/", re.IGNORECASE
 )
 
 
@@ -394,7 +395,7 @@ def _parse_sitemap_apps(xml_text: str, limit: int) -> list[AppOpportunity]:
             continue
 
         loc = loc_el.text.strip()
-        m = _SITEMAP_SOFTWARE_RE.search(loc)
+        m = _ALTERNATIVETO_SOFTWARE_RE.search(loc)
         if not m:
             continue
 
@@ -421,106 +422,51 @@ def _parse_sitemap_apps(xml_text: str, limit: int) -> list[AppOpportunity]:
 
 
 def scrape_alternativeto(limit: int = 30) -> list[AppOpportunity]:
-    """Scrape AlternativeTo sitemap XML for software entries.
+    """Scrape AlternativeTo browse page for software entries.
 
-    Falls back to HTML scraping of ``/browse/`` if the sitemap yields
-    no results.
+    Uses Playwright (JS rendering) as primary approach since AlternativeTo
+    blocks plain HTTP requests from CI. Falls back to requests-based fetch.
     """
     try:
         apps: list[AppOpportunity] = []
+        url = "https://alternativeto.net/browse/all/"
 
-        # --- primary: sitemap XML -------------------------------------------
-        resp = _fetch("https://alternativeto.net/sitemap.xml")
-        if resp is not None:
-            root_xml = resp.text
+        # --- primary: Playwright (JS-rendered) ------------------------------
+        html = _fetch_js(url)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+        else:
+            resp = _fetch(url)
+            if resp is None:
+                return []
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-            try:
-                root = ET.fromstring(root_xml)
-            except ET.ParseError:
-                root = None
+        # AlternativeTo lists apps as links to /software/<slug>/
+        seen: set[str] = set()
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            m = _ALTERNATIVETO_SOFTWARE_RE.search(href)
+            if not m:
+                continue
 
-            if root is not None:
-                ns = ""
-                if root.tag.startswith("{"):
-                    ns = root.tag.split("}")[0] + "}"
+            slug = m.group(1)
+            if slug in seen:
+                continue
+            seen.add(slug)
 
-                # Check for <sitemap><loc>...</loc></sitemap> (index format)
-                sub_sitemaps = [
-                    loc_el.text.strip()
-                    for sm in root.iter(f"{ns}sitemap")
-                    if (loc_el := sm.find(f"{ns}loc")) is not None and loc_el.text
-                ]
+            title = link.get_text(strip=True)
+            name = title if title and len(title) >= 2 else slug.replace("-", " ").title()
 
-                if sub_sitemaps:
-                    # Prefer sub-sitemaps that look like they contain software
-                    software_subs = [
-                        u for u in sub_sitemaps if "software" in u.lower()
-                    ]
-                    targets = software_subs or sub_sitemaps
-                    for sub_url in targets:
-                        sub_resp = _fetch(sub_url)
-                        if sub_resp is None:
-                            continue
-                        apps = _parse_sitemap_apps(sub_resp.text, limit)
-                        if apps:
-                            break
-                else:
-                    # Might be a flat urlset already
-                    apps = _parse_sitemap_apps(root_xml, limit)
+            full_url = href if href.startswith("http") else f"https://alternativeto.net{href}"
 
-        # --- fallback: HTML scraping ----------------------------------------
-        if not apps:
-            resp = _fetch("https://alternativeto.net/browse/")
-            if resp is not None:
-                soup = BeautifulSoup(resp.text, "html.parser")
+            apps.append(AppOpportunity(
+                name=name,
+                url=full_url,
+                source="alternativeto",
+            ))
 
-                for item in soup.select(
-                    ".app-item, .app-card, [data-app-id], .listing-item"
-                ):
-                    name_el = item.find(
-                        ["a", "h2", "h3", "span"],
-                        class_=re.compile(r"name|title|app-name", re.IGNORECASE),
-                    )
-                    if not name_el:
-                        name_el = item.find(["a", "h2", "h3"])
-                    if not name_el:
-                        continue
-
-                    name = name_el.get_text(strip=True)
-                    if not name or len(name) < 2:
-                        continue
-
-                    a_tag = (
-                        name_el if name_el.name == "a"
-                        else name_el.find("a", href=True)
-                    )
-                    href = a_tag["href"] if a_tag and a_tag.get("href") else ""
-                    app_url = (
-                        href if href.startswith("http")
-                        else f"https://alternativeto.net{href}"
-                    )
-
-                    alt_el = item.find(
-                        ["span", "a", "div"],
-                        class_=re.compile(
-                            r"alternatives|alt-count|count", re.IGNORECASE
-                        ),
-                    )
-                    try:
-                        alt_text = alt_el.get_text(strip=True) if alt_el else "0"
-                        alt_count = int(re.sub(r"[^\d]", "", alt_text) or "0")
-                    except (ValueError, TypeError):
-                        alt_count = 0
-
-                    apps.append(AppOpportunity(
-                        name=name,
-                        url=app_url,
-                        source="alternativeto",
-                        alternatives_count=alt_count,
-                    ))
-
-                    if len(apps) >= limit:
-                        break
+            if len(apps) >= limit:
+                break
 
         return apps[:limit]
 

@@ -7,6 +7,7 @@ prints a warning and returns [].
 
 from __future__ import annotations
 
+import atexit
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -82,6 +83,50 @@ def _extract_tags(text: str) -> list[str]:
         return []
     lowered = text.lower()
     return [tag for tag in _KNOWN_TAGS if tag in lowered]
+
+
+# ---------------------------------------------------------------------------
+# Playwright helper for JS-rendered pages
+# ---------------------------------------------------------------------------
+
+# Lazy-initialized browser instance
+_BROWSER = None
+_PLAYWRIGHT = None
+
+
+def _fetch_js(url: str, wait_until: str = "networkidle", timeout: int = 15000) -> Optional[str]:
+    """Fetch a URL using headless Chromium for JS-rendered pages. Returns HTML string or None."""
+    global _BROWSER, _PLAYWRIGHT
+    try:
+        if _BROWSER is None:
+            from playwright.sync_api import sync_playwright
+            _PLAYWRIGHT = sync_playwright().start()
+            _BROWSER = _PLAYWRIGHT.chromium.launch(headless=True)
+
+        page = _BROWSER.new_page()
+        page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (compatible; DisruptionScanner/1.0)"})
+        try:
+            page.goto(url, wait_until=wait_until, timeout=timeout)
+            content = page.content()
+            return content
+        finally:
+            page.close()
+    except Exception as e:
+        print(f"  ⚠️ Playwright fetch failed for {url}: {e}")
+        return None
+
+
+def _cleanup_browser():
+    global _BROWSER, _PLAYWRIGHT
+    if _BROWSER:
+        _BROWSER.close()
+        _BROWSER = None
+    if _PLAYWRIGHT:
+        _PLAYWRIGHT.stop()
+        _PLAYWRIGHT = None
+
+
+atexit.register(_cleanup_browser)
 
 
 # ---------------------------------------------------------------------------
@@ -200,11 +245,14 @@ def scrape_hackernews(limit: int = 30) -> list[IdeaPost]:
 def scrape_producthunt(limit: int = 30) -> list[IdeaPost]:
     """Scrape today's Product Hunt homepage for launched products."""
     try:
-        resp = _fetch("https://www.producthunt.com/")
-        if resp is None:
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html = _fetch_js("https://www.producthunt.com/")
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+        else:
+            resp = _fetch("https://www.producthunt.com/")
+            if resp is None:
+                return []
+            soup = BeautifulSoup(resp.text, "html.parser")
         posts: list[IdeaPost] = []
 
         for link in soup.find_all("a", href=True):
@@ -249,11 +297,14 @@ def scrape_producthunt(limit: int = 30) -> list[IdeaPost]:
 def scrape_indiehackers(limit: int = 30) -> list[IdeaPost]:
     """Scrape Indie Hackers posts feed."""
     try:
-        resp = _fetch("https://www.indiehackers.com/posts")
-        if resp is None:
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html = _fetch_js("https://www.indiehackers.com/posts")
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+        else:
+            resp = _fetch("https://www.indiehackers.com/posts")
+            if resp is None:
+                return []
+            soup = BeautifulSoup(resp.text, "html.parser")
         posts: list[IdeaPost] = []
 
         # Look for article/div elements with post-related classes
@@ -306,11 +357,14 @@ def scrape_indiehackers(limit: int = 30) -> list[IdeaPost]:
 def scrape_exploding_topics(limit: int = 30) -> list[IdeaPost]:
     """Scrape trending topics from Exploding Topics."""
     try:
-        resp = _fetch("https://explodingtopics.com/")
-        if resp is None:
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html = _fetch_js("https://explodingtopics.com/")
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+        else:
+            resp = _fetch("https://explodingtopics.com/")
+            if resp is None:
+                return []
+            soup = BeautifulSoup(resp.text, "html.parser")
         posts: list[IdeaPost] = []
 
         candidates = soup.find_all(

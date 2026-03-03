@@ -13,6 +13,7 @@ from scraper import (
     IdeaPost,
     _extract_tags,
     _fetch,
+    _fetch_js,
     scrape_reddit,
     scrape_hackernews,
     scrape_producthunt,
@@ -312,8 +313,9 @@ class TestScrapeHackerNews:
 class TestScrapeProductHunt:
     """Test scrape_producthunt."""
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_producthunt_returns_list(self, mock_fetch):
+    def test_scrape_producthunt_returns_list(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_PH_HTML)
         posts = scrape_producthunt(limit=10)
 
@@ -323,14 +325,16 @@ class TestScrapeProductHunt:
         assert all(p.sub_source == "daily" for p in posts)
         assert all("/posts/" in p.url for p in posts)
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_producthunt_empty_on_failure(self, mock_fetch):
+    def test_scrape_producthunt_empty_on_failure(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = None
         posts = scrape_producthunt(limit=10)
         assert posts == []
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_producthunt_respects_limit(self, mock_fetch):
+    def test_scrape_producthunt_respects_limit(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_PH_HTML)
         posts = scrape_producthunt(limit=1)
         assert len(posts) == 1
@@ -339,8 +343,9 @@ class TestScrapeProductHunt:
 class TestScrapeIndieHackers:
     """Test scrape_indiehackers."""
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_indiehackers_returns_list(self, mock_fetch):
+    def test_scrape_indiehackers_returns_list(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_IH_HTML)
         posts = scrape_indiehackers(limit=10)
 
@@ -349,16 +354,18 @@ class TestScrapeIndieHackers:
         assert all(p.source == "indiehackers" for p in posts)
         assert all(p.sub_source == "posts" for p in posts)
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_indiehackers_extracts_snippet(self, mock_fetch):
+    def test_scrape_indiehackers_extracts_snippet(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_IH_HTML)
         posts = scrape_indiehackers(limit=10)
         # The first post should have a snippet from the <p class="body">
         snippets = [p.snippet for p in posts if p.snippet]
         assert len(snippets) >= 1
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_indiehackers_empty_on_failure(self, mock_fetch):
+    def test_scrape_indiehackers_empty_on_failure(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = None
         posts = scrape_indiehackers(limit=10)
         assert posts == []
@@ -367,8 +374,9 @@ class TestScrapeIndieHackers:
 class TestScrapeExplodingTopics:
     """Test scrape_exploding_topics."""
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_exploding_topics_returns_list(self, mock_fetch):
+    def test_scrape_exploding_topics_returns_list(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_ET_HTML)
         posts = scrape_exploding_topics(limit=10)
 
@@ -377,8 +385,9 @@ class TestScrapeExplodingTopics:
         assert all(p.source == "exploding" for p in posts)
         assert all(p.sub_source == "trending" for p in posts)
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_exploding_topics_extracts_tags(self, mock_fetch):
+    def test_scrape_exploding_topics_extracts_tags(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_ET_HTML)
         posts = scrape_exploding_topics(limit=10)
         # "AI Agents" should produce "ai" tag
@@ -386,15 +395,28 @@ class TestScrapeExplodingTopics:
         assert len(ai_post) >= 1
         assert "ai" in ai_post[0].tags
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_exploding_topics_empty_on_failure(self, mock_fetch):
+    def test_scrape_exploding_topics_empty_on_failure(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = None
         posts = scrape_exploding_topics(limit=10)
         assert posts == []
 
+    @patch("scraper._fetch_js", return_value=None)
     @patch("scraper._fetch")
-    def test_scrape_exploding_topics_deduplicates_titles(self, mock_fetch):
+    def test_scrape_exploding_topics_deduplicates_titles(self, mock_fetch, mock_fetch_js):
         mock_fetch.return_value = _make_response(FAKE_ET_HTML)
         posts = scrape_exploding_topics(limit=10)
         titles = [p.title for p in posts]
         assert len(titles) == len(set(titles))
+
+
+class TestPlaywrightIntegration:
+    """Test that scrapers use Playwright when available."""
+
+    @patch("scraper._fetch_js")
+    def test_scrape_producthunt_uses_playwright_when_available(self, mock_fetch_js):
+        mock_fetch_js.return_value = '<html><body><a href="/posts/cool-tool">Cool Tool</a></body></html>'
+        results = scrape_producthunt(limit=10)
+        assert len(results) >= 1
+        mock_fetch_js.assert_called_once()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -363,54 +364,163 @@ def scrape_capterra(
 # ---------------------------------------------------------------------------
 
 
-def scrape_alternativeto(limit: int = 30) -> list[AppOpportunity]:
-    """Scrape AlternativeTo for apps with many alternatives."""
-    try:
-        resp = _fetch("https://alternativeto.net/")
-        if resp is None:
-            return []
+_SITEMAP_SOFTWARE_RE = re.compile(
+    r"https?://alternativeto\.net/software/([^/]+)/", re.IGNORECASE
+)
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+
+def _parse_sitemap_apps(xml_text: str, limit: int) -> list[AppOpportunity]:
+    """Extract AppOpportunity entries from a sitemap XML string.
+
+    Looks for ``<url><loc>`` entries whose URL matches the
+    ``/software/<name>/`` pattern and derives the app name from the path.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    # Handle namespaced sitemaps (xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+
+    apps: list[AppOpportunity] = []
+    seen: set[str] = set()
+
+    for url_el in root.iter(f"{ns}url"):
+        loc_el = url_el.find(f"{ns}loc")
+        if loc_el is None or not loc_el.text:
+            continue
+
+        loc = loc_el.text.strip()
+        m = _SITEMAP_SOFTWARE_RE.search(loc)
+        if not m:
+            continue
+
+        slug = m.group(1)
+        if slug in seen:
+            continue
+        seen.add(slug)
+
+        # Convert slug to display name: "my-cool-app" -> "My Cool App"
+        name = slug.replace("-", " ").title()
+
+        apps.append(AppOpportunity(
+            name=name,
+            url=loc,
+            source="alternativeto",
+            rating=0,
+            num_reviews=0,
+        ))
+
+        if len(apps) >= limit:
+            break
+
+    return apps
+
+
+def scrape_alternativeto(limit: int = 30) -> list[AppOpportunity]:
+    """Scrape AlternativeTo sitemap XML for software entries.
+
+    Falls back to HTML scraping of ``/browse/`` if the sitemap yields
+    no results.
+    """
+    try:
         apps: list[AppOpportunity] = []
 
-        for item in soup.select(".app-item, .app-card, [data-app-id], .listing-item"):
-            name_el = item.find(
-                ["a", "h2", "h3", "span"],
-                class_=re.compile(r"name|title|app-name", re.IGNORECASE),
-            )
-            if not name_el:
-                name_el = item.find(["a", "h2", "h3"])
-            if not name_el:
-                continue
+        # --- primary: sitemap XML -------------------------------------------
+        resp = _fetch("https://alternativeto.net/sitemap.xml")
+        if resp is not None:
+            root_xml = resp.text
 
-            name = name_el.get_text(strip=True)
-            if not name or len(name) < 2:
-                continue
-
-            a_tag = name_el if name_el.name == "a" else name_el.find("a", href=True)
-            href = a_tag["href"] if a_tag and a_tag.get("href") else ""
-            app_url = href if href.startswith("http") else f"https://alternativeto.net{href}"
-
-            # Alternatives count
-            alt_el = item.find(
-                ["span", "a", "div"],
-                class_=re.compile(r"alternatives|alt-count|count", re.IGNORECASE),
-            )
             try:
-                alt_text = alt_el.get_text(strip=True) if alt_el else "0"
-                alt_count = int(re.sub(r"[^\d]", "", alt_text) or "0")
-            except (ValueError, TypeError):
-                alt_count = 0
+                root = ET.fromstring(root_xml)
+            except ET.ParseError:
+                root = None
 
-            apps.append(AppOpportunity(
-                name=name,
-                url=app_url,
-                source="alternativeto",
-                alternatives_count=alt_count,
-            ))
+            if root is not None:
+                ns = ""
+                if root.tag.startswith("{"):
+                    ns = root.tag.split("}")[0] + "}"
 
-            if len(apps) >= limit:
-                break
+                # Check for <sitemap><loc>...</loc></sitemap> (index format)
+                sub_sitemaps = [
+                    loc_el.text.strip()
+                    for sm in root.iter(f"{ns}sitemap")
+                    if (loc_el := sm.find(f"{ns}loc")) is not None and loc_el.text
+                ]
+
+                if sub_sitemaps:
+                    # Prefer sub-sitemaps that look like they contain software
+                    software_subs = [
+                        u for u in sub_sitemaps if "software" in u.lower()
+                    ]
+                    targets = software_subs or sub_sitemaps
+                    for sub_url in targets:
+                        sub_resp = _fetch(sub_url)
+                        if sub_resp is None:
+                            continue
+                        apps = _parse_sitemap_apps(sub_resp.text, limit)
+                        if apps:
+                            break
+                else:
+                    # Might be a flat urlset already
+                    apps = _parse_sitemap_apps(root_xml, limit)
+
+        # --- fallback: HTML scraping ----------------------------------------
+        if not apps:
+            resp = _fetch("https://alternativeto.net/browse/")
+            if resp is not None:
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                for item in soup.select(
+                    ".app-item, .app-card, [data-app-id], .listing-item"
+                ):
+                    name_el = item.find(
+                        ["a", "h2", "h3", "span"],
+                        class_=re.compile(r"name|title|app-name", re.IGNORECASE),
+                    )
+                    if not name_el:
+                        name_el = item.find(["a", "h2", "h3"])
+                    if not name_el:
+                        continue
+
+                    name = name_el.get_text(strip=True)
+                    if not name or len(name) < 2:
+                        continue
+
+                    a_tag = (
+                        name_el if name_el.name == "a"
+                        else name_el.find("a", href=True)
+                    )
+                    href = a_tag["href"] if a_tag and a_tag.get("href") else ""
+                    app_url = (
+                        href if href.startswith("http")
+                        else f"https://alternativeto.net{href}"
+                    )
+
+                    alt_el = item.find(
+                        ["span", "a", "div"],
+                        class_=re.compile(
+                            r"alternatives|alt-count|count", re.IGNORECASE
+                        ),
+                    )
+                    try:
+                        alt_text = alt_el.get_text(strip=True) if alt_el else "0"
+                        alt_count = int(re.sub(r"[^\d]", "", alt_text) or "0")
+                    except (ValueError, TypeError):
+                        alt_count = 0
+
+                    apps.append(AppOpportunity(
+                        name=name,
+                        url=app_url,
+                        source="alternativeto",
+                        alternatives_count=alt_count,
+                    ))
+
+                    if len(apps) >= limit:
+                        break
 
         return apps[:limit]
 
@@ -545,29 +655,32 @@ def scrape_public_boards(limit: int = 30) -> list[AppOpportunity]:
 
 _ALT_SUBREDDITS = ["SaaS", "selfhosted", "software", "sysadmin"]
 _ALT_PATTERN = re.compile(r"alternative\s+to\s+(\w[\w\s]{1,30})", re.IGNORECASE)
+_ATOM_NS = "http://www.w3.org/2005/Atom"
 
 
 def scrape_reddit_alternatives(limit: int = 30) -> list[AppOpportunity]:
-    """Search Reddit for 'alternative to X' threads."""
+    """Search Reddit for 'alternative to X' threads via RSS feeds."""
     try:
         apps: list[AppOpportunity] = []
         seen_names: set[str] = set()
 
         for sub in _ALT_SUBREDDITS:
             url = (
-                f"https://www.reddit.com/r/{sub}/search.json"
+                f"https://www.reddit.com/r/{sub}/search.rss"
                 f"?q=alternative+to&restrict_sr=1&sort=new&limit=10"
             )
             resp = _fetch(url)
             if resp is None:
                 continue
 
-            data = resp.json()
-            children = data.get("data", {}).get("children", [])
+            root = ET.fromstring(resp.text)
 
-            for child in children:
-                d = child.get("data", {})
-                title = d.get("title", "")
+            for entry in root.findall(f"{{{_ATOM_NS}}}entry"):
+                title_el = entry.find(f"{{{_ATOM_NS}}}title")
+                link_el = entry.find(f"{{{_ATOM_NS}}}link")
+
+                title = title_el.text if title_el is not None and title_el.text else ""
+                post_url = link_el.get("href", "") if link_el is not None else ""
 
                 match = _ALT_PATTERN.search(title)
                 if not match:
@@ -577,9 +690,6 @@ def scrape_reddit_alternatives(limit: int = 30) -> list[AppOpportunity]:
                 if not app_name or app_name.lower() in seen_names:
                     continue
                 seen_names.add(app_name.lower())
-
-                permalink = d.get("permalink", "")
-                post_url = f"https://reddit.com{permalink}" if permalink else ""
 
                 apps.append(AppOpportunity(
                     name=app_name,

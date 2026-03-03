@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import json
+import math
 import sys
 import threading
 import time
@@ -109,16 +110,22 @@ def run_scan():
     # Convert ideas posts to AppOpportunity for unified storage
     for post in ideas_posts:
         post_dict = asdict(post) if hasattr(post, '__dataclass_fields__') else post
+        score = post_dict.get("score", 0)
+
+        # Log scale: 10 pts → ~7, 100 → ~14, 1000 → ~21, 5000 → ~26
+        # Ideas are weaker signals than confirmed disruption, so cap at 30
+        normalized_score = min(math.log10(max(score, 1) + 1) * 7, 30)
+
         app = AppOpportunity(
             name=post_dict.get("title", "")[:100],
             url=post_dict.get("url", ""),
             source=f"Ideas-{post_dict.get('source', 'unknown')}",
             category=post_dict.get("sub_source", ""),
-            num_reviews=post_dict.get("score", 0),
+            num_reviews=0,
             snippet=post_dict.get("snippet", "")[:200],
             negative_themes=post_dict.get("tags", []),
         )
-        app.disruption_score = min(post_dict.get("score", 0) / 10, 50)  # Normalize
+        app.disruption_score = round(normalized_score, 1)
         all_apps.append(app)
 
     # ── Store results ─────────────────────────────────────────────────────
